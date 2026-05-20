@@ -1,2 +1,2 @@
-# acc_sync
-Accelerometer Synchrony
+# Accelerometer Synchrony
+Measuring movement synchrony between subjects via ACC data streams.
