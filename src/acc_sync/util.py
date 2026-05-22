@@ -1,4 +1,5 @@
 from pathlib import Path
+import warnings
 
 import pandas as pd
 
@@ -45,3 +46,36 @@ def trim_time(
         end_ts = end_ts.tz_localize(tz)
 
     return df.truncate(before=start_ts, after=end_ts)
+
+def fill_missing(series: pd.Series, method: str = 'linear') -> pd.Series:
+    """Fill missing values in a series by using interpolation. Method can be linear or spline."""
+    if method not in ['linear', 'spline']:
+        raise ValueError("Method must be 'linear' or 'spline'")
+    
+    # interpolate
+    if method == 'linear':
+        filled = series.interpolate(method='linear')
+    elif method == 'spline':
+        filled = series.interpolate(method='spline', order=3)
+    
+    # fill any remaining NaNs with 0
+    return filled.fillna(0)
+
+def filter(series: pd.Series, cutoff: float = 10.0, fs: float = 25.0, btype: str = 'lowpass') -> pd.Series:
+    """Apply a 4th order butterworth filter to a series."""
+    from scipy.signal import butter, sosfiltfilt
+    
+    # Design butterworth filter
+    nyquist = 0.5 * fs
+    normal_cutoff = cutoff / nyquist
+    sos = butter(4, normal_cutoff, btype=btype, output='sos')
+    
+    # See if signal has NaNs; if so, raise a warning and use fill_missing to interpolate
+    if series.isna().any():
+        warnings.warn("Signal has NaNs; using fill_missing to interpolate")
+        series = fill_missing(series)
+    
+    # Apply filter
+    filtered = sosfiltfilt(sos, series.values)
+    
+    return pd.Series(filtered, index=series.index)
