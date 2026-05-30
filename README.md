@@ -8,19 +8,35 @@ Navigate to the project directory and run:
 pip install -e .
 ```
 
+There's some sample data in the `data/` directory, but you'll need to put the actual parquet files there.
 
 ## Usage
 
 ```python
 import acc_sync as acs
+import matplotlib.pyplot as plt
 
-
-data = acs.load_session_data(
+session = acs.util.load_session_data(
     pt="RF001",
-    session="2025_09_27",
-    role="client",
-    hand="R",
+    session="2025_11_15",
+    roles=["client", "therapist"],
+    hands=["R", "L"]
 )
 
-acs.trim_time(data, '12:06:00', '15:34:19')
+acc_mag = acs.util.prep_session_mag(
+    session, start_time='15:03:00', end_time='15:32:00'
+)
+
+for wearable in session:
+    fig = acs.viz.plot_acc(session[wearable])
+    fig.suptitle(f"Accelerometer Data for {wearable}")
+    plt.show()
+
+fig = acs.viz.plot_mag_dict(acc_mag, figsize=(8, 6))
+plt.show()
 ```
+
+## Demo
+
+See `demo.ipynb` for a demo of the package.
+GitHub sometimes have trouble converting notebooks, so you can also view (and run) it on [Google Colab](https://colab.research.google.com/github/tomxi/acc_sync/blob/main/demo.ipynb).
