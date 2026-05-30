@@ -11,7 +11,7 @@ def load_session_data(
     hands: list[str],
 ) -> dict[str, pd.DataFrame]:
     """Load parquet recordings and return as a dictionary of DataFrames."""
-    data_dir = Path(__file__).parent.parent.parent / "data"
+    data_dir = Path(__file__).parent.parent / "data"
     
     df_dict = dict()
     for role in roles:

@@ -13,3 +13,7 @@ dependencies = [
     "matplotlib",
     "librosa",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["acc_sync*"]
