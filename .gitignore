@@ -1,3 +1,6 @@
+dev.ipynb
+
+### Below are GitHub python template ignore rules
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

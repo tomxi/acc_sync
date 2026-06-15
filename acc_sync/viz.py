@@ -3,6 +3,66 @@ import matplotlib.dates as mdates
 import pandas as pd
 import numpy as np
 import librosa
+import plotly.express as px
+import plotly.graph_objects as go
+
+
+# region: MOI visualization
+def plot_session_notes(data: pd.DataFrame, date: str = "2026-01-01") -> go.Figure:
+    """Plot session notes as horizontal bars on a session-adjusted time axis."""
+    # Convert event offsets into actual session times.
+    session_start = pd.to_timedelta(data["Video Start (HH:MM:SS)"].dropna().iloc[0])
+    start_offsets = pd.to_timedelta("00:" + data["Event Start (MM:SS)"])
+    end_offsets = pd.to_timedelta("00:" + data["Event End (MM:SS)"])
+    start_times = pd.Timestamp(date) + session_start + start_offsets
+    end_times = pd.Timestamp(date) + session_start + end_offsets
+
+    # Combine all note columns into one hover label per row.
+    hover_text = data.iloc[:, 3:].apply(
+        lambda row: "<br>".join(
+            str(note).strip()
+            for note in row
+            if pd.notna(note) and str(note).strip()
+        ),
+        axis=1,
+    )
+    hover_text = (
+        hover_text
+        + "<br>Start: "
+        + data["Event Start (MM:SS)"].astype(str)
+        + "<br>End: "
+        + data["Event End (MM:SS)"].astype(str)
+    )
+
+    # Draw each note row as a bar on the same horizontal lane.
+    plot_data = pd.DataFrame(
+        {
+            "start": start_times,
+            "end": end_times,
+            "lane": "Session notes",
+            "hover_text": hover_text,
+        }
+    )
+    fig = px.timeline(
+        plot_data,
+        x_start="start",
+        x_end="end",
+        y="lane",
+        custom_data=["hover_text"],
+    )
+    fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
+    fig.update_layout(
+        title="Session Notes",
+        xaxis_title="Time",
+        xaxis=dict(tickformat="%H:%M:%S"),
+        yaxis_title="",
+        showlegend=False,
+    )
+    return fig
+
+# endregion
+
+# region: Accelerometer visualization
 
 def plot_acc(data: pd.DataFrame, figsize: tuple[float, float]=(8, 6)) -> plt.Figure:
     """
@@ -51,6 +111,9 @@ def plot_mag_dict(mag_dict: dict[str, pd.Series], figsize: tuple[float, float]=(
     fig.suptitle('Session ACC Magnitude')
     return fig
 
+# endregion
+
+# region: Correlation visualization
 def plot_corr_df(corr_df: pd.DataFrame, figsize=(8, 6)) -> plt.Figure:
     """
     Plot a correlation DataFrame with time on the x-axis and lags on the y-axis.
@@ -93,6 +156,9 @@ def plot_corr_df(corr_df: pd.DataFrame, figsize=(8, 6)) -> plt.Figure:
     
     return fig
 
+# endregion
+
+# region: Spectrogram visualization
 def plot_spec(
     S: np.ndarray, sr: float = 25.0, hop_length: int = 12, n_fft: int = 128, 
     figsize: tuple[float, float]=(10, 4), ax=None
@@ -159,6 +225,8 @@ def plot_coherence(coherence_matrix, sr, hop_length, y_axis='linear', ax=None):
     if colorbar:
         # Attach a colorbar mapped to the [0, 1] bounds
         cbar = fig.colorbar(img, ax=ax, format="%.1f")
-        cbar.set_label('Coherence $\gamma^2$')
+        cbar.set_label('Coherence')
         plt.tight_layout()
     return fig, ax
+
+# endregion
