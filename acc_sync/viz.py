@@ -18,7 +18,7 @@ def plot_session_notes(data: pd.DataFrame, date: str = "2026-01-01") -> go.Figur
     end_times = pd.Timestamp(date) + session_start + end_offsets
 
     # Combine all note columns into one hover label per row.
-    hover_text = data.iloc[:, 3:].apply(
+    notes = data.iloc[:, 3:].apply(
         lambda row: "<br>".join(
             str(note).strip()
             for note in row
@@ -26,31 +26,25 @@ def plot_session_notes(data: pd.DataFrame, date: str = "2026-01-01") -> go.Figur
         ),
         axis=1,
     )
-    hover_text = (
-        hover_text
-        + "<br>Start: "
-        + data["Event Start (MM:SS)"].astype(str)
-        + "<br>End: "
-        + data["Event End (MM:SS)"].astype(str)
-    )
 
     # Draw each note row as a bar on the same horizontal lane.
     plot_data = pd.DataFrame(
         {
             "start": start_times,
             "end": end_times,
-            "lane": "Session notes",
-            "hover_text": hover_text,
+            "type": "Note",
+            "notes": notes,
         }
     )
+
     fig = px.timeline(
         plot_data,
         x_start="start",
         x_end="end",
-        y="lane",
-        custom_data=["hover_text"],
+        y="type",
+        hover_name="notes",
     )
-    fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
+    
     fig.update_layout(
         title="Session Notes",
         xaxis_title="Time",
