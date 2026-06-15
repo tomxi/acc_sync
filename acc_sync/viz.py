@@ -32,7 +32,7 @@ def plot_session_notes(data: pd.DataFrame, date: str = "2026-01-01") -> go.Figur
         {
             "start": start_times,
             "end": end_times,
-            "type": "Note",
+            "type": "Session Notes",
             "notes": notes,
         }
     )
@@ -43,6 +43,7 @@ def plot_session_notes(data: pd.DataFrame, date: str = "2026-01-01") -> go.Figur
         x_end="end",
         y="type",
         hover_name="notes",
+        hover_data={"type": False},
     )
     
     fig.update_layout(
