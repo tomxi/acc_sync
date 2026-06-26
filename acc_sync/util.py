@@ -1,8 +1,14 @@
+import warnings
 from pathlib import Path
 
 
 import pandas as pd
 import numpy as np
+
+# Accelerometer counts corresponding to 1 g. The raw signal baseline sits around
+# this value (gravity), so it serves as a stable, session-independent physical
+# reference for reporting spectral energies in dB.
+COUNTS_PER_G = 1000.0
 
 def load_session_data(
     pt: str,
@@ -29,8 +35,18 @@ def trim_time(
     start_time: str = '15:06:00', 
     end_time: str = '15:34:19'
 ) -> pd.DataFrame:
-    """Trim a DataFrame to a specific time range."""
+    """Resample a Series/DataFrame onto a uniform grid spanning [start, end].
 
+    Rather than a plain truncation (which keeps each recording's own irregular
+    samples and can yield different lengths), the data is reindexed onto a uniform
+    time grid at the inferred sampling period, covering exactly [start_time,
+    end_time]. This guarantees consistent sample positions and length across
+    recordings so downstream STFT/correlation frames line up.
+
+    If the requested range extends beyond the available data (nothing before
+    ``start_time`` or nothing after ``end_time``), a warning is raised and the
+    extrapolated ticks are filled with NaN.
+    """
     # Make sure df index is DatetimeIndex and monotonic increasing
     if not isinstance(df.index, pd.DatetimeIndex):
         df = df.copy()
@@ -53,7 +69,26 @@ def trim_time(
         start_ts = start_ts.tz_localize(tz)
         end_ts = end_ts.tz_localize(tz)
 
-    return df.truncate(before=start_ts, after=end_ts)
+    # Warn (and pad with NaN below) if the requested range exceeds the data.
+    if start_ts < df.index[0]:
+        warnings.warn(
+            f"No data before {df.index[0]}; extrapolating ticks from {start_ts} "
+            "and filling with NaN.",
+            stacklevel=2,
+        )
+    if end_ts > df.index[-1]:
+        warnings.warn(
+            f"No data after {df.index[-1]}; extrapolating ticks to {end_ts} "
+            "and filling with NaN.",
+            stacklevel=2,
+        )
+
+    # Build a uniform grid at the data's sampling period and snap samples onto it
+    # (nearest within half a period absorbs jitter). Ticks with no nearby sample
+    # become NaN, keeping every recording the same length.
+    period = pd.Timedelta(np.median(np.diff(df.index.values)))
+    grid = pd.date_range(start=start_ts, end=end_ts, freq=period)
+    return df.reindex(grid, method="nearest", tolerance=period / 2)
 
 
 def fill_missing(series: pd.Series, method: str = 'linear') -> pd.Series:
@@ -150,9 +185,9 @@ def prep_session_mag(
     series_dict = {}
     for key, df in df_dict.items():
         # get magnitude series and trim time
-        mag = trim_time(df['magnitude'], start_time, end_time)
+        mag = fill_missing(trim_time(df['magnitude'], start_time, end_time))
         # Fill missing and filter
-        mag = sig_filter(fill_missing(mag), cutoff=filter_cutoff, fs=25, btype='lowpass')
+        mag = sig_filter(mag, cutoff=filter_cutoff, fs=25, btype='lowpass')
         # High pass filter
         mag = sig_filter(mag, cutoff=0.1, fs=25, btype='highpass')
         series_dict[key] = mag
@@ -213,8 +248,21 @@ def frame_xcorr(
     return pd.DataFrame(corr)
 
 
-def stft(signal: pd.Series, hop: float = 0.5, win_length: float = 5.0, sr: float = 25.0, verbose: bool = False):
+def stft(signal: pd.Series, hop: float = 0.5, win_length: float = 5.0, sr: float = 25.0, verbose: bool = False) -> pd.DataFrame:
+    """
+    Compute the STFT of a signal and return it as a DataFrame.
+
+    Returns:
+        A complex-valued DataFrame of shape (frequency_bins, time_frames).
+        The index is the frequency in Hz, and the columns are a DatetimeIndex
+        marking the center time of each frame, anchored at ``signal.index[0]``.
+        This datetime column axis matches the time axis produced by
+        ``windowed_correlation``/``plot_corr_df`` so spectrograms can be plotted
+        on a consistent time axis.
+    """
     from librosa import stft as librosa_stft
+    from librosa import fft_frequencies, frames_to_time
+
     window_length = int(round(win_length * sr))
     # find nearest power of 2
     n_fft = int(2 ** int(np.ceil(np.log2(window_length))))
@@ -223,13 +271,25 @@ def stft(signal: pd.Series, hop: float = 0.5, win_length: float = 5.0, sr: float
     if verbose:
         print(f"STFT parameters: n_fft={n_fft}, hop_length={hop_length}, win_length={window_length}")
     # STFT: complex-valued matrix, shape = (frequency_bins, time_frames)
-    return librosa_stft(
+    S = librosa_stft(
         y=signal.values.astype(float),
         n_fft=n_fft,
         hop_length=hop_length,
         win_length=window_length,
         center=True
     )
+
+    # Frequency bins (Hz) for the index
+    freqs = fft_frequencies(sr=sr, n_fft=n_fft)
+
+    # Frame center times (seconds), then anchor to the signal's start time
+    frame_times = frames_to_time(range(S.shape[-1]), sr=sr, hop_length=hop_length, n_fft=n_fft)
+    start_time = signal.index[0]
+    times = start_time.tz_localize(None) + pd.to_timedelta(frame_times, unit="s")
+    if start_time.tzinfo is not None:
+        times = times.tz_localize(start_time.tzinfo)
+
+    return pd.DataFrame(S, index=freqs, columns=times)
 
 
 def spec_coherence(S_i, S_j, sigma=(1.0, 2.0), eps=1e-8):
@@ -243,15 +303,23 @@ def spec_coherence(S_i, S_j, sigma=(1.0, 2.0), eps=1e-8):
         eps: Small constant for numerical stability.
         
     Returns:
-        coherence: 2D real array bounded [0, 1].
+        coherence: 2D real array bounded [0, 1]. If the inputs are DataFrames
+        (e.g. from ``stft``), the result preserves their index/columns.
     """
     from scipy.ndimage import gaussian_filter
-    # 1. Compute raw spectra
+
+    # Accept DataFrames (from stft) or raw ndarrays; operate on raw values.
+    index = S_i.index if isinstance(S_i, pd.DataFrame) else None
+    columns = S_i.columns if isinstance(S_i, pd.DataFrame) else None
+    S_i = np.asarray(S_i)
+    S_j = np.asarray(S_j)
+
+    # Compute raw spectra
     cross_spec = S_i * S_j.conj()
     auto_i = np.abs(S_i)**2
     auto_j = np.abs(S_j)**2
 
-    # 2. Apply smoothing (Note: Cross-spectrum must be smoothed in real/imaginary parts separately)
+    # Apply smoothing (Note: Cross-spectrum must be smoothed in real/imaginary parts separately)
     smooth_cross_real = gaussian_filter(cross_spec.real, sigma=sigma)
     smooth_cross_imag = gaussian_filter(cross_spec.imag, sigma=sigma)
     smooth_cross = smooth_cross_real + 1j * smooth_cross_imag
@@ -259,11 +327,44 @@ def spec_coherence(S_i, S_j, sigma=(1.0, 2.0), eps=1e-8):
     smooth_auto_i = gaussian_filter(auto_i, sigma=sigma)
     smooth_auto_j = gaussian_filter(auto_j, sigma=sigma)
 
-    # 3. Compute magnitude-squared coherence
+    # Compute magnitude-squared coherence
     numerator = np.abs(smooth_cross)**2
     denominator = smooth_auto_i * smooth_auto_j
 
-    return numerator / (denominator + eps)
+    coherence = numerator / (denominator + eps)
+    if index is not None:
+        coherence = pd.DataFrame(coherence, index=index, columns=columns)
+    return coherence
+
+
+def mean_cross_energy(cross_spec: pd.DataFrame, ref_g: float = 1.0, db=True) -> pd.Series:
+    """Mean cross-spectral energy per time frame, in dB relative to (ref_g * g)^2.
+
+    The cross-spectrum ``S_i * conj(S_j)`` has units of counts^2, so its magnitude
+    is an energy. We reference it to a fixed physical level ``(ref_g * COUNTS_PER_G)^2``
+    rather than a per-session full scale (dBFS), which keeps values directly
+    comparable across sessions.
+
+    Args:
+        cross_spec: Complex cross-spectrum DataFrame (freq_bins, time_frames) with
+            a datetime column index, e.g. ``S_i * conj(S_j)``.
+        ref_g: Reference acceleration in g (default 1 g, the gravity baseline).
+
+    Returns:
+        A Series indexed by the cross-spectrum's time columns, in dB.
+    """
+    from librosa import power_to_db
+
+    mean_energy = np.abs(cross_spec).mean(axis=0)
+    ref = (ref_g * COUNTS_PER_G) ** 2
+    result = pd.Series(
+        power_to_db(np.asarray(mean_energy, dtype=float), ref=ref),
+        index=mean_energy.index,
+    )
+    if not db:
+        result = 10 ** (result / 10)
+    return result
+
 
 def physical_to_bin_sigmas(sigma_sec, sigma_hz, sr, n_fft, hop_length):
     """
